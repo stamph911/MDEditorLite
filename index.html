@@ -745,8 +745,6 @@
   <div class="ctx-item" data-act="cut"><span class="ctx-ico">✂</span>Cut<span class="ctx-key">Ctrl+X</span></div>
   <div class="ctx-item" data-act="copy"><span class="ctx-ico">⧉</span>Copy<span class="ctx-key">Ctrl+C</span></div>
   <div class="ctx-item" data-act="paste"><span class="ctx-ico">📋</span>Paste<span class="ctx-key">Ctrl+V</span></div>
-  <div class="ctx-sep ctx-dg"></div>
-  <div class="ctx-item ctx-dg" data-act="dgExportVsdx"><span class="ctx-ico">🔷</span>Export to Visio (.vsdx)</div>
   <div class="ctx-sep ctx-fmt"></div>
   <div class="ctx-item ctx-fmt" data-act="bold"><span class="ctx-ico"><b>B</b></span>Bold<span class="ctx-key">Ctrl+B</span></div>
   <div class="ctx-item ctx-fmt" data-act="italic"><span class="ctx-ico"><i>I</i></span>Italic<span class="ctx-key">Ctrl+I</span></div>
@@ -1760,7 +1758,6 @@ rtEl.addEventListener('paste', e => {
   if (tryPasteTable(text, 'richtext')) return;     // a GFM table (e.g. copied cells) → render as a table
   if (!text && _imgClip) { insertImageClip(_imgClip, 'richtext'); return; }   // in-app copied image
   if (!text && _tblClip) { tryPasteTable(_tblClip.md, 'richtext'); return; }  // in-app copied cells
-  if (DiagramSelect.tryPasteFence(text)) return;   // a copied/cut diagram fence → re-render as island
   // Full-fidelity rich paste: our own copied selection (round-trips via _richClip), or foreign rich
   // HTML from Word / a browser (normalized through Markdown into our supported subset).
   let md = null;
@@ -3944,7 +3941,6 @@ async function ctxPaste() {
           if (rtc && rtc.cell) { const mat = _clipMatrix(txt); if (mat && pasteTableValues(rtc.cell, mat.matrix)) return; }
         }
         if (tryPasteTable(txt, pane)) return;        // copied cells / GFM table → render as a table
-        if (pane === 'richtext' && DiagramSelect.tryPasteFence(txt)) return;   // copied diagram fence
         // Rich paste (richtext pane only): our own selection, or foreign rich HTML → Markdown → render.
         if (pane === 'richtext') {
           let md = null;
@@ -5518,6 +5514,34 @@ async function exportWord(){
   a.click(); URL.revokeObjectURL(a.href);
 }
 
+function importWord(){
+  document.getElementById('open-menu').style.display = 'none';
+  document.getElementById('docx-input').click();
+}
+document.getElementById('docx-input').addEventListener('change', async e => {
+  const file = e.target.files[0]; e.target.value = ''; if (!file) return;
+  await _loadDocxFile(file);
+});
+async function _loadDocxFile(file){
+  let md;
+  try {
+    const zip = await _unzip(await file.arrayBuffer());
+    md = await _docxToMd(zip);
+  } catch(err){
+    alert('Could not import this Word file:\n' + (err && err.message || err));
+    return;
+  }
+  // Imported content is a fresh, unsaved document (no backing .md) → mark dirty so the
+  // user saves it explicitly. Suggested name mirrors the .docx with a .md extension.
+  srcEl.value = md;
+  fileHandle = null; _openFilePath = null; _baseMtime = null;
+  _noHandleName = (file.name || 'document.docx').replace(/\.docx$/i, '.md');
+  lastSavedContent = '';
+  _undoReset();
+  setDirty(true); updateStats(); scheduleRender(); updateRevertBtn();
+  _setAutosaveState('unsaved');   // imported, not yet saved to a .md → no save target yet
+}
+
 // ── ZIP reader (inverse of _zip) ─────────────────────────────────────────────
 // Parse the End-Of-Central-Directory + central directory to map name → {method, comp}
 // (compressed bytes), reading the real data offset from each local file header.
@@ -5826,13 +5850,19 @@ async function _docxToMd(map){
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Init
 // ═══════════════════════════════════════════════════════════════════════════════
-srcEl.value = `# MD Editor
+srcEl.value = `# MD Editor Lite
 
-A split-view Markdown editor — edit **raw Markdown** on the left or **rich text** on the right; the two panes stay in sync. The toolbar acts on whichever pane is focused.
+A split-view Markdown editor — edit **raw Markdown** on the left or **rich text** on the right; the two stay in sync.
 
 ## Formatting
 
-**Bold**, *italic*, ~~strikethrough~~, <u>underline</u>, \`inline code\`, plus text color and highlight. Use the toolbar or Ctrl+B / Ctrl+I / Ctrl+U.
+**Bold**, *italic*, ~~strikethrough~~, <u>underline</u>, \`inline code\`, plus text color and highlight — from the toolbar or the right-click menu. **Clear formatting** strips it all back.
+
+Font family and size apply to the selection, or set the editor default when nothing is selected.
+
+### Headings
+
+Choose a level from the heading dropdown; the button reflects the heading at the cursor.
 
 ### Lists
 
@@ -5842,6 +5872,8 @@ A split-view Markdown editor — edit **raw Markdown** on the left or **rich tex
 
 1. First step
 2. Second step
+
+Indent and outdent change the list level, and **continue numbering** resumes from a previous list.
 
 ### Blockquote
 
@@ -5857,98 +5889,28 @@ function greet(name) {
 
 ### Table
 
-| Feature   | Supported |
-|-----------|:---------:|
-| Tables    | yes |
-| Diagrams  | yes |
-
-### ER diagram
-
-\`\`\`erd
-entity ACCOUNT {
-  * Id <<PK>>
-}
-entity CONTACT {
-  * Id <<PK>>
-  --
-  AccountId <<FK>>
-}
-
-ACCOUNT ||--o{ CONTACT::AccountId
-\`\`\`
-
-### BPMN diagram
-
-\`\`\`bpmn
-<?xml version="1.0" encoding="UTF-8"?>
-<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" id="Defs_1" targetNamespace="http://bpmn.io/schema/bpmn">
-  <bpmn:process id="Process_1" isExecutable="false">
-    <bpmn:startEvent id="Start" name="Start" />
-    <bpmn:task id="Edit" name="Edit document" />
-    <bpmn:exclusiveGateway id="Gw" name="Approved?" />
-    <bpmn:task id="Publish" name="Publish" />
-    <bpmn:endEvent id="End" name="Done" />
-    <bpmn:sequenceFlow id="f1" sourceRef="Start" targetRef="Edit" />
-    <bpmn:sequenceFlow id="f2" sourceRef="Edit" targetRef="Gw" />
-    <bpmn:sequenceFlow id="f3" name="Yes" sourceRef="Gw" targetRef="Publish" />
-    <bpmn:sequenceFlow id="f4" name="No" sourceRef="Gw" targetRef="End" />
-    <bpmn:sequenceFlow id="f5" sourceRef="Publish" targetRef="End" />
-  </bpmn:process>
-  <bpmndi:BPMNDiagram id="Di">
-    <bpmndi:BPMNPlane id="Pl" bpmnElement="Process_1">
-      <bpmndi:BPMNShape id="Start_di" bpmnElement="Start">
-        <dc:Bounds x="120" y="100" width="36" height="36" />
-        <bpmndi:BPMNLabel><dc:Bounds x="114" y="140" width="48" height="14" /></bpmndi:BPMNLabel>
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Edit_di" bpmnElement="Edit">
-        <dc:Bounds x="210" y="78" width="100" height="80" />
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Gw_di" bpmnElement="Gw" isMarkerVisible="true">
-        <dc:Bounds x="360" y="93" width="50" height="50" />
-        <bpmndi:BPMNLabel><dc:Bounds x="350" y="63" width="70" height="14" /></bpmndi:BPMNLabel>
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Publish_di" bpmnElement="Publish">
-        <dc:Bounds x="470" y="78" width="100" height="80" />
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="End_di" bpmnElement="End">
-        <dc:Bounds x="630" y="100" width="36" height="36" />
-        <bpmndi:BPMNLabel><dc:Bounds x="632" y="140" width="32" height="14" /></bpmndi:BPMNLabel>
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNEdge id="f1_di" bpmnElement="f1">
-        <di:waypoint x="156" y="118" /><di:waypoint x="210" y="118" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="f2_di" bpmnElement="f2">
-        <di:waypoint x="310" y="118" /><di:waypoint x="360" y="118" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="f3_di" bpmnElement="f3">
-        <di:waypoint x="410" y="118" /><di:waypoint x="470" y="118" />
-        <bpmndi:BPMNLabel><dc:Bounds x="428" y="100" width="20" height="14" /></bpmndi:BPMNLabel>
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="f4_di" bpmnElement="f4">
-        <di:waypoint x="385" y="143" /><di:waypoint x="385" y="210" /><di:waypoint x="648" y="210" /><di:waypoint x="648" y="136" />
-        <bpmndi:BPMNLabel><dc:Bounds x="508" y="192" width="16" height="14" /></bpmndi:BPMNLabel>
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="f5_di" bpmnElement="f5">
-        <di:waypoint x="570" y="118" /><di:waypoint x="630" y="118" />
-      </bpmndi:BPMNEdge>
-    </bpmndi:BPMNPlane>
-  </bpmndi:BPMNDiagram>
-</bpmn:definitions>
-\`\`\`
+| Feature | Supported |
+|---------|:---------:|
+| Tables  | yes |
+| Images  | yes |
 
 ## What you can do
 
-- **Copy / paste, full fidelity** — copy formatted text, tables, images, and diagrams; paste keeps their structure — even to and from Word or a browser.
-- **Images** — paste from the clipboard, or insert from a URL/file; click to select, drag the corner to resize, press Delete to remove.
-- **Tables** — insert from the toolbar; right-click to add/remove rows & columns and set column alignment.
-- **Diagrams** — insert a **BPMN** flow or an **ER** diagram from the toolbar; double-click one to edit it visually.
-- **Word & Visio** — Open ▾ imports .docx and .vsdx; Save As ▾ exports Word; right-click a BPMN diagram to export Visio.
-- **Files** — Open / Save / Save As, Recent files, and autosave every 30s (never overwrites external edits).
-- **Navigate** — toggle the outline pane for a clickable heading list.
+- **Text** — bold, italic, underline, strikethrough, inline code, text color, highlight, clear formatting.
+- **Headings** — apply any level from the toolbar; the control shows the heading at the cursor.
+- **Lists** — bullet, ordered and task lists; indent / outdent; continue numbering.
+- **Links** — insert a link from the toolbar.
+- **Images** — paste from the clipboard, or insert from a URL or a file; click to select and drag the corner to resize.
+- **Tables** — insert from the toolbar; use the gutter handles to select a row or column; right-click to add or delete rows and columns, set column alignment, or insert copied cells.
+- **Code** — inline code, or a fenced code block.
+- **Copy / paste, full fidelity** — formatted text, tables and images keep their structure, even to and from Word or a browser.
+- **Word** — Open ▾ imports .docx; Save As ▾ exports .docx.
+- **Files** — New, Open, Save, Save As, recent files, reload from disk, and autosave every 30s (never overwrites external edits).
+- **View** — toggle the outline pane, switch to A4 page width, or hide the source pane.
 
 ## Shortcuts
 
-**Ctrl+S** save · **Ctrl+O** open · **Ctrl+Z / Ctrl+Y** undo / redo · **Ctrl+B / I / U** bold / italic / underline · **Ctrl+V** smart paste
+**Ctrl+N** new · **Ctrl+O** open · **Ctrl+S** save · **Ctrl+Z / Ctrl+Y** undo / redo · **Ctrl+B / I / U** bold / italic / underline
 
 ---
 
